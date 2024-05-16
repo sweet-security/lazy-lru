@@ -55,6 +55,14 @@ impl<K, V> LruCache<K, V, DefaultHashBuilder> {
             capacity,
         }
     }
+
+    pub fn new_no_alloc(capacity: usize) -> LruCache<K, V> {
+        Self {
+            cache: Default::default(),
+            counter: AtomicU64::default(),
+            capacity,
+        }
+    }
 }
 
 impl<K, V, S> LruCache<K, V, S> {
@@ -318,6 +326,10 @@ impl<K, V, S> LruCache<K, V, S> {
     #[inline]
     pub fn len(&self) -> usize {
         self.cache.len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Returns true if the cache contains no entries.
