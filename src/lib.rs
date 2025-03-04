@@ -3,7 +3,6 @@ use {
     alloc::vec::Vec,
     core::{
         borrow::Borrow,
-        cmp::Reverse,
         hash::{BuildHasher, Hash},
         iter::FusedIterator,
         sync::atomic::{AtomicU64, Ordering},
@@ -106,36 +105,44 @@ impl<K: Eq + Hash + PartialEq, V, S: BuildHasher> LruCache<K, V, S> {
     /// types that can be `==` without being identical.
     #[inline]
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
+        self.put_with_evicted(key, value).0
+    }
+
+    /// Inserts a key-value pair into the cache, possibly returning a vector of evicted items
+    /// If the cache not have this key present, None is returned.
+    /// If the cache did have this key present, the value is updated, and the
+    /// old value is returned. The key is not updated, though; this matters for
+    /// types that can be `==` without being identical.
+    #[inline]
+    pub fn put_with_evicted(&mut self, key: K, value: V) -> (Option<V>, Vec<(u64, K, V)>) {
         let ordinal = self.counter.fetch_add(1, Ordering::Relaxed);
         let old = self
             .cache
             .insert(key, (AtomicU64::new(ordinal), value))
             .map(|(_, value)| value);
-        self.maybe_evict();
-        old
+        let evicted = self.maybe_evict();
+        (old, evicted)
     }
 
     // If the cache hash grown to at least twice the self.capacity, evicts
     // extra entries from the cache by LRU policy.
-    fn maybe_evict(&mut self) {
+    fn maybe_evict(&mut self) -> Vec<(u64, K, V)> {
         if self.cache.len() < self.capacity.saturating_mul(2) {
-            return;
+            return Vec::new();
         }
-        let mut entries: Vec<(K, (/*ordinal:*/ u64, V))> = self
+        let mut entries: Vec<(/*ordinal:*/ u64, K, V)> = self
             .cache
             .drain()
-            .map(|(key, (ordinal, value))| (key, (ordinal.into_inner(), value)))
+            .map(|(key, (ordinal, value))| (ordinal.into_inner(), key, value))
             .collect();
+        entries.select_nth_unstable_by_key(self.capacity.saturating_sub(1), |&(ordinal, _, _)| {
+            ordinal
+        });
+        for _ in 0..self.capacity {
+            let (ordinal, key, value) = entries.pop().unwrap();
+            self.cache.insert(key, (AtomicU64::new(ordinal), value));
+        }
         entries
-            .select_nth_unstable_by_key(self.capacity.saturating_sub(1), |&(_, (ordinal, _))| {
-                Reverse(ordinal)
-            });
-        self.cache.extend(
-            entries
-                .into_iter()
-                .take(self.capacity)
-                .map(|(key, (ordinal, value))| (key, (AtomicU64::new(ordinal), value))),
-        );
     }
 
     /// Returns true if the cache contains a value for the specified key.
@@ -689,6 +696,32 @@ mod tests {
                 let val = rng.gen();
                 let old = cache.put(key, val);
                 assert!(other.put(key, val) == old || old.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn test_put_with_evict() {
+        let mut cache = LruCache::new(10);
+        for i in 0..19 {
+            cache.put(i, i);
+        }
+        for i in 0..19 {
+            assert!(cache.contains_key(&i), "{i}");
+        }
+        // touch all even numbers
+        for i in (0..19).step_by(2) {
+            cache.get(&i);
+        }
+
+        let (_, evicted) = cache.put_with_evicted(19, 19);
+        assert_eq!(evicted.len(), 10);
+        for i in 1..20 {
+            if i % 2 == 0 {
+                assert!(cache.contains_key(&i), "{i}");
+            } else if i != 19 {
+                assert!(!cache.contains_key(&i), "{i}");
+                assert!(evicted.iter().find(|(_, k, _)| *k == i).is_some(), "{i}");
             }
         }
     }
