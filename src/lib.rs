@@ -362,6 +362,10 @@ impl<K, V, S> LruCache<K, V, S> {
     {
         self.cache.retain(|key, (_, value)| f(key, value));
     }
+
+    pub fn drain(&mut self) -> impl Iterator<Item = (K, V)> + use<'_, K, V, S> {
+        self.cache.drain().map(|(k, (_, v))| (k, v))
+    }
 }
 
 impl<K: Clone + Eq + Hash + PartialEq, V: Clone, S: Clone + BuildHasher> LruCache<K, V, S> {
@@ -724,5 +728,31 @@ mod tests {
                 assert!(evicted.iter().find(|(_, k, _)| *k == i).is_some(), "{i}");
             }
         }
+    }
+
+    #[test]
+    fn test_drain() {
+        let mut cache = LruCache::new(10);
+        {
+            for i in 0..39 {
+                cache.put(i, i);
+            }
+            assert_eq!(cache.len(), 19);
+            let drained = cache.drain().map(|(k, _)| k).collect::<Vec<_>>();
+            assert!(cache.is_empty());
+            for i in 20..39 {
+                assert!(drained.contains(&i), "{i}");
+            }
+        }
+
+        // make sure it's drained even if iterator is not consumed
+        {
+            for i in 0..39 {
+                cache.put(i, i);
+            }
+            assert_eq!(cache.len(), 19);
+            _ = cache.drain();
+        }
+        assert!(cache.is_empty());
     }
 }
